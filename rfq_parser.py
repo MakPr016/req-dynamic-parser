@@ -297,6 +297,64 @@ def _looks_like_item_continuation(table):
 
 
 def _extract_rows(rows, idx_map, num_cols, seen_srs, items):
+    def _parse_description_parts(raw_desc):
+        text = raw_desc.strip()
+        if not text:
+            return "", "", ""
+
+        # Pull dosage-like fragments such as "156 Mg/5ml" or "500 mg".
+        dosage_match = re.search(
+            r"\b\d+(?:\.\d+)?\s*(?:mg|mcg|g|iu|ml|mg/ml|mcg/ml|g/ml)\b(?:\s*/\s*\d+(?:\.\d+)?\s*ml)?",
+            text,
+            flags=re.IGNORECASE,
+        )
+        dosage = dosage_match.group(0) if dosage_match else ""
+
+        # Common dosage forms that appear in descriptions.
+        form_match = re.search(
+            r"\b(tablet|tab|capsule|cap|suspension|syrup|injection|inj|vial|ampoule|amp|drops|inhaler|ointment|cream|gel|lotion|suppository|supp|solution|powder|elixir|serum)\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+        form = form_match.group(0) if form_match else ""
+
+        cleaned = text
+        for fragment in [dosage, form]:
+            if fragment:
+                cleaned = re.sub(re.escape(fragment), "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" ,.-")
+
+        return cleaned, dosage, form
+
+    def _parse_pack_from_unit(raw_unit):
+        text = raw_unit.strip()
+        if not text:
+            return "", 0, ""
+
+        # Match patterns like "Pack of 20 Tablet" or "Box of 100".
+        pack_match = re.search(r"\b(pack|box|bottle|bag|tube|vial|ampoule|amp|ea|each|single unit)\b", text, flags=re.IGNORECASE)
+        unit_type = pack_match.group(0) if pack_match else ""
+
+        qty_match = re.search(r"\b(\d+(?:\.\d+)?)\b", text)
+        pack_size = 0
+        if qty_match:
+            try:
+                pack_size_val = float(qty_match.group(1))
+                pack_size = int(pack_size_val) if pack_size_val.is_integer() else pack_size_val
+            except Exception:
+                pack_size = 0
+
+        pack_unit = ""
+        trailing = text
+        if qty_match:
+            trailing = text[qty_match.end():]
+        if trailing:
+            m = re.search(r"\b([a-zA-Z]+(?:\s+[a-zA-Z]+)?)\b", trailing)
+            if m:
+                pack_unit = m.group(1).strip()
+
+        return unit_type.title() if unit_type else "", pack_size, pack_unit.title() if pack_unit else ""
+
     for row in rows:
         row_clean = [_clean(c) for c in row]
         row_clean = (row_clean + [""] * num_cols)[:num_cols]
@@ -342,13 +400,20 @@ def _extract_rows(rows, idx_map, num_cols, seen_srs, items):
             continue
         seen_srs.add(key)
 
+        clean_desc, dosage, form = _parse_description_parts(desc)
+        unit_type, pack_size, pack_unit = _parse_pack_from_unit(unit_val)
+
         # --- NEW: classify the item ---
-        category = determine_item_category(desc, unit_val)
+        category = determine_item_category(clean_desc or desc, unit_val)
 
         items.append({
             "sr": sr_val if sr_val is not None else len(items) + 1,
-            "description": desc,
-            "unit": unit_val,
+            "description": clean_desc or desc,
+            "dosage": dosage,
+            "form": form.title() if form else "",
+            "pack_size": pack_size,
+            "pack_unit": pack_unit,
+            "unit": unit_type,
             "qty": qty_val,
             "unit_price": None,
             "total_price": None,
