@@ -24,6 +24,195 @@ SR_RE   = re.compile(r'\b(sr|item\s*no|pos\.?)\b|^no\.?$')
 UNIT_RE = re.compile(r'(unit|uom|pack\s*size|measure)')
 
 
+# ---------------------------------------------------------------------------
+# CATEGORY DEFINITIONS (ported from old parser)
+# Ordered by specificity. Whole-word boundary matching is applied.
+# ---------------------------------------------------------------------------
+CATEGORY_DEFINITIONS = {
+    "Pharmaceuticals & Biologics": [
+        "tablet", "tab", "capsule", "cap", "syrup", "suspension", "susp", "injection", "inj", "vial", "ampoule", "amp",
+        "drops", "gtt", "inhaler", "vaccine", "insulin", "dose", "drug", "medication", "ointment", "cream", "gel",
+        "lotion", "suppository", "supp", "antibiotic", "antiviral", "analgesic", "anesthetic", "hormone", "steroid",
+        "vitamin", "mineral", "supplement", "lozenge", "patch", "solution", "powder for suspension", "elixir", "serum",
+        "antitoxin",
+    ],
+    "Surgical Products": [
+        "scalpel", "forceps", "retractor", "clamp", "suture", "stapler", "surgical mesh", "hemostatic", "sealant",
+        "surgical drape", "surgical gown", "laparoscopic", "robotic surgery", "electrosurgical", "surgical laser",
+        "surgical blade", "trocar", "surgical clip", "surgical scissor", "needle holder",
+    ],
+    "Orthopedic & Spine": [
+        "orthopedic", "spine", "joint replacement", "trauma fixation", "bone plate", "bone screw",
+        "intramedullary rod", "bone nail", "spinal implant", "spinal fusion", "bone graft", "orthopedic brace",
+        "cast", "arthroscopy", "fixator", "prosthesis", "bone drill", "bone saw",
+    ],
+    "Cardiovascular Products": [
+        "cardiac stent", "pacemaker", "defibrillator", "icd", "heart valve", "vascular graft", "cardiac catheter",
+        "guidewire", "cardiac balloon", "ablation", "coronary", "angioplasty", "introducer sheath",
+    ],
+    "Medical Imaging Equipment": [
+        "mri", "ct scanner", "x-ray", "ultrasound", "mammography", "fluoroscopy", "pet scanner", "c-arm",
+        "medical imaging", "transducer", "x-ray film", "contrast media", "lead apron",
+    ],
+    "Diagnostic Products": [
+        "diagnostic", "test kit", "glucose test", "reagent", "immunoassay", "chemistry analyzer", "hematology",
+        "microbiology", "culture media", "pregnancy test", "covid", "rapid test", "urinalysis", "penlight",
+        "specula", "otoscope", "ophthalmoscope", "lancet", "glucometer strips", "test strip",
+    ],
+    "Patient Monitoring Equipment": [
+        "vital signs", "ecg", "ekg", "pulse oximeter", "blood pressure monitor", "sphygmomanometer",
+        "medical thermometer", "capnography", "fetal monitor", "telemetry", "spo2 sensor", "bp cuff",
+        "temperature probe",
+    ],
+    "Respiratory & Anesthesia": [
+        "ventilator", "anesthesia machine", "oxygen concentrator", "nebulizer", "cpap", "bipap", "respiratory",
+        "endotracheal", "tracheostomy", "spirometer", "oxygen mask", "breathing circuit", "nasal cannula",
+        "resuscitator", "laryngoscope",
+    ],
+    "Infusion & Vascular Access": [
+        "infusion pump", "syringe pump", "iv set", "iv catheter", "venous", "picc", "iv port",
+        "dialysis catheter", "administration set", "extension set", "stopcock", "giving set", "saline",
+        "dextrose", "ringer", "sodium chloride", "water for injection",
+    ],
+    "Wound Care & Tissue Management": [
+        "wound dressing", "bandage", "gauze", "medical tape", "plaster", "adhesive", "wound foam", "alginate",
+        "hydrocolloid", "compression bandage", "ostomy", "skin substitute", "negative pressure",
+    ],
+    "Dialysis & Renal Care": [
+        "hemodialysis", "peritoneal", "dialyzer", "blood line", "fistula needle", "dialysis concentrate",
+        "bicarbonate",
+    ],
+    "Ophthalmic Products": [
+        "intraocular", "intraocular lens", "phaco", "vitrectomy", "lasik", "contact lens", "viscoelastic",
+        "ophthalmic solution", "eye drops",
+    ],
+    "Dental Products": [
+        "dental implant", "orthodontic", "dental bracket", "dental wire", "dental drill", "dental handpiece",
+        "dental cement", "dental composite", "amalgam", "impression material", "teeth whitening", "dental chair",
+    ],
+    "Neurology & Neurosurgery": [
+        "neurostimulation", "spinal cord stimulator", "neuro coil", "flow diverter", "cranial", "shunt",
+        "neuro electrode", "eeg", "emg",
+    ],
+    "Laboratory Equipment & Supplies": [
+        "microscope", "lab centrifuge", "incubator", "autoclave", "pipette", "glassware", "test tube",
+        "petri dish", "flask", "beaker", "microscope slide", "cover glass", "fume hood", "biosafety cabinet",
+    ],
+    "Personal Protective Equipment (PPE)": [
+        "ppe", "n95", "face shield", "safety eyewear", "goggles", "protective apron", "shoe cover",
+        "head cover", "coverall", "isolation gown", "hazmat", "surgical mask",
+    ],
+    "Sterilization & Disinfection": [
+        "sterilization", "disinfectant", "antiseptic", "povidone", "iodine", "chlorhexidine", "alcohol swab",
+        "hand sanitizer", "medical soap", "enzymatic cleaner", "detergent", "washer disinfector", "sterilizer",
+        "sterilization indicator",
+    ],
+    "Hospital Furniture & Equipment": [
+        "hospital bed", "examination table", "stretcher", "medical trolley", "medical cart", "medical cabinet",
+        "bedside locker", "overbed table", "iv pole", "wheelchair",
+    ],
+    "Rehabilitation & Physical Therapy": [
+        "rehabilitation", "physiotherapy", "walker", "walking cane", "crutch", "exercise band", "traction",
+        "electrotherapy", "massage table", "orthosis",
+    ],
+    "Home Healthcare Products": [
+        "home care", "blood glucose meter", "hearing aid", "mobility aid", "bathroom safety", "commode",
+    ],
+    "Emergency & Trauma Care": [
+        "emergency kit", "trauma kit", "first aid", "aed", "defibrillator", "manual resuscitator",
+        "suction unit", "immobilizer", "cervical collar", "splint", "tourniquet", "crash cart",
+    ],
+    "Maternal & Neonatal Care": [
+        "maternal", "neonatal", "infant incubator", "infant warmer", "phototherapy", "breast pump",
+        "obstetric", "birthing bed", "fetal doppler", "umbilical",
+    ],
+    "Urology Products": [
+        "urology", "foley catheter", "urine bag", "urinary drainage", "ureteral stent", "stone basket",
+    ],
+    "Gastroenterology & Endoscopy": [
+        "endoscope", "gastroscope", "colonoscope", "biopsy forceps", "polypectomy snare", "gastric balloon",
+        "ercp",
+    ],
+    "Oncology Products": [
+        "oncology", "chemotherapy", "radiotherapy", "brachytherapy", "port-a-cath", "cancer diagnostic",
+    ],
+    "Pain Management": [
+        "pain management", "pca pump", "epidural", "nerve block", "tens unit",
+    ],
+    "Sleep Medicine": [
+        "sleep apnea", "cpap mask", "bipap mask", "sleep tubing", "polysomnography",
+    ],
+    "Telemedicine & Digital Health": [
+        "telemedicine", "telehealth", "remote monitor", "medical software", "health app",
+    ],
+    "Blood Management": [
+        "blood bag", "blood transfusion", "blood bank", "blood warmer", "apheresis",
+    ],
+    "Mortuary & Pathology": [
+        "mortuary", "autopsy", "body bag", "morgue fridge", "dissection table", "microtome",
+        "tissue processor",
+    ],
+    "Environmental Control": [
+        "medical gas", "medical vacuum", "medical air plant", "gas manifold", "gas outlet", "gas alarm",
+    ],
+    "Mobility & Accessibility": [
+        "patient lift", "patient hoist", "wheelchair ramp", "stair lift", "transfer board",
+    ],
+    "Bariatric Products": [
+        "bariatric bed", "bariatric wheelchair", "heavy duty scale",
+    ],
+    "Medical Textiles": [
+        "hospital linen", "bed sheet", "pillow case", "medical blanket", "towel", "privacy curtain",
+        "medical uniform", "scrub suit", "lab coat",
+    ],
+    "Infection Control Products": [
+        "waste bin", "sharps container", "biohazard bag", "spill kit", "air purifier",
+    ],
+    "Medical Gases & Cryogenics": [
+        "gas cylinder", "oxygen regulator", "flowmeter", "liquid oxygen", "nitrogen tank",
+    ],
+    "Nutrition & Feeding": [
+        "enteral feeding", "clinical nutrition", "nasogastric tube", "feeding pump", "feeding set", "peg tube",
+    ],
+    "Specimen Collection & Transport": [
+        "specimen container", "sample collection", "transport media", "transport swab", "urine container",
+        "stool container", "cool box", "transport bag",
+    ],
+    "Medical Software & IT": [
+        "emr", "ehr", "pacs", "ris", "lis", "his", "hospital information system",
+    ],
+    "Aesthetics & Dermatology": [
+        "dermatology", "aesthetic laser", "ipl", "dermal filler", "botulinum", "botox", "chemical peel",
+        "microdermabrasion",
+    ],
+    # Catch-all — must remain last
+    "Medical Supplies & Consumables": [
+        "syringe", "needle", "glove", "examination glove", "disposable", "consumable", "cotton wool",
+        "alcohol prep", "urinal", "bedpan", "underpad", "tongue depressor", "applicator",
+        "lubricant jelly", "cannula",
+    ],
+}
+
+
+def determine_item_category(description: str, unit: str = "") -> str:
+    """
+    Returns the best-matching category for a line item using whole-word regex
+    matching against CATEGORY_DEFINITIONS.  Falls back to
+    'Medical Supplies & Consumables' if nothing matches.
+    """
+    text = (description + " " + unit).lower()
+    for category, keywords in CATEGORY_DEFINITIONS.items():
+        for keyword in keywords:
+            pattern = r'\b' + re.escape(keyword) + r'\b'
+            if re.search(pattern, text):
+                return category
+    return "Medical Supplies & Consumables"
+
+
+# ---------------------------------------------------------------------------
+# Remaining helpers (unchanged from original)
+# ---------------------------------------------------------------------------
+
 def _get_genai_client():
     global _client
     if _client is None:
@@ -153,6 +342,9 @@ def _extract_rows(rows, idx_map, num_cols, seen_srs, items):
             continue
         seen_srs.add(key)
 
+        # --- NEW: classify the item ---
+        category = determine_item_category(desc, unit_val)
+
         items.append({
             "sr": sr_val if sr_val is not None else len(items) + 1,
             "description": desc,
@@ -163,6 +355,7 @@ def _extract_rows(rows, idx_map, num_cols, seen_srs, items):
             "brand": "",
             "expiry_date": "",
             "remarks": "",
+            "category": category,       # ← new field
         })
 
 
@@ -215,7 +408,9 @@ def _extract_line_items_from_llm(full_text):
         "You are an expert at parsing RFQ documents. Extract ALL line items / schedule of requirements from the text. "
         "Return a JSON array only. Each object must have exactly these keys: "
         '{"sr": integer, "description": "string", "unit": "string or empty string", "qty": number or 0, '
-        '"unit_price": null, "total_price": null, "brand": "", "expiry_date": "", "remarks": ""}. '
+        '"unit_price": null, "total_price": null, "brand": "", "expiry_date": "", "remarks": "", "category": "string"}. '
+        "For 'category', classify each item into the most appropriate medical supply category "
+        "(e.g. 'Pharmaceuticals & Biologics', 'Surgical Products', 'Diagnostic Products', etc.). "
         "If no line items are found, return []. RETURN JSON ARRAY ONLY, no markdown, no preamble."
     )
     try:
@@ -231,6 +426,14 @@ def _extract_line_items_from_llm(full_text):
         )
         result = json.loads(response.text)
         if isinstance(result, list):
+            # Apply local rule-based categorisation as a safety net in case
+            # the LLM returns an empty or generic category string.
+            for item in result:
+                if not item.get("category") or item["category"] in ("string", ""):
+                    item["category"] = determine_item_category(
+                        item.get("description", ""),
+                        item.get("unit", ""),
+                    )
             return result
         return []
     except Exception:
