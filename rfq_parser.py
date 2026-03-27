@@ -468,7 +468,10 @@ def extract_line_items(pdf_bytes):
     return items
 
 
-def _extract_line_items_from_llm(full_text):
+def _extract_line_items_from_llm(full_text, use_gemini: bool = True):
+    if not use_gemini:
+        return []
+
     system_prompt = (
         "You are an expert at parsing RFQ documents. Extract ALL line items / schedule of requirements from the text. "
         "Return a JSON array only. Each object must have exactly these keys: "
@@ -505,7 +508,169 @@ def _extract_line_items_from_llm(full_text):
         return []
 
 
-def parse_rfq_pdf(pdf_bytes):
+
+# ---------------------------------------------------------------------------
+# RULE-BASED STRUCTURE EXTRACTOR (no LLM)
+# ---------------------------------------------------------------------------
+
+_SECTION_SIGNALS = [
+    (re.compile(r'(quotation|quote|rfq|tender)\s*(submission|instruction|guideline)', re.I), 'Quotation Submission'),
+    (re.compile(r'vendor|supplier|company\s*info|bidder\s*info', re.I),                     'Vendor Information'),
+    (re.compile(r'declaration|conformity|compliance\s*statement|certif', re.I),              'Declaration of Conformity'),
+    (re.compile(r'schedule\s*of\s*req|item\s*list|line\s*item|bill\s*of\s*material', re.I), 'Schedule of Requirements'),
+    (re.compile(r'technical\s*(offer|proposal|spec)|financial\s*(offer|proposal)', re.I),   'Technical & Financial Offer'),
+    (re.compile(r'delivery|compliance|lead\s*time|incoterm|warranty', re.I),                'Compliance & Delivery'),
+]
+
+_FIELD_RULES = [
+    # --- Quotation Submission ---
+    (re.compile(r'rfq\s*(number|no\.?|ref)', re.I),
+     dict(id='rfq_number',        label='RFQ Number',              type='text',     section='Quotation Submission',   required=True,  placeholder='e.g. RFQ-2024-001')),
+    (re.compile(r'(submission|closing|deadline|due)\s*(date|by)', re.I),
+     dict(id='submission_date',   label='Submission Deadline',     type='date',     section='Quotation Submission',   required=True,  placeholder='DD/MM/YYYY')),
+    (re.compile(r'validity\s*(period|days|of\s*offer)', re.I),
+     dict(id='validity_period',   label='Validity Period (days)',  type='number',   section='Quotation Submission',   required=True,  placeholder='e.g. 90')),
+    (re.compile(r'(submit|send|deliver).{0,30}(email|electronically|portal)', re.I),
+     dict(id='submission_method', label='Submission Method',       type='dropdown', section='Quotation Submission',   required=True,  options=['Email', 'Portal', 'Hard Copy'])),
+    (re.compile(r'\bcurrency\b', re.I),
+     dict(id='currency',          label='Currency',                type='dropdown', section='Quotation Submission',   required=True,  options=['USD', 'EUR', 'GBP', 'LYD', 'AED', 'SAR'])),
+    (re.compile(r'(price|quote|quotation).{0,20}(all.inclusive|include.*vat|include.*tax)', re.I),
+     dict(id='price_inclusive',   label='Price Inclusive of All Taxes', type='checkbox', section='Quotation Submission', required=False)),
+    (re.compile(r'payment\s*(terms?|condition|method)', re.I),
+     dict(id='payment_terms',     label='Payment Terms',           type='text',     section='Quotation Submission',   required=False, placeholder='e.g. Net 30')),
+
+    # --- Vendor Information ---
+    (re.compile(r'(company|vendor|supplier|bidder|firm)\s*(name|full\s*name)', re.I),
+     dict(id='company_name',      label='Company Name',            type='text',     section='Vendor Information',     required=True,  placeholder='Legal registered name')),
+    (re.compile(r'(company|vendor|business|registered)\s*(address|location|headquarter)', re.I),
+     dict(id='company_address',   label='Company Address',         type='textarea', section='Vendor Information',     required=True,  placeholder='Full postal address')),
+    (re.compile(r'country\s*(of\s*)?(origin|registration|incorporation)', re.I),
+     dict(id='country',           label='Country',                 type='text',     section='Vendor Information',     required=True,  placeholder='e.g. Libya')),
+    (re.compile(r'contact\s*(person|name|individual|representative)', re.I),
+     dict(id='contact_person',    label='Contact Person',          type='text',     section='Vendor Information',     required=True,  placeholder='Full name')),
+    (re.compile(r'(phone|telephone|mobile|tel)\s*(number|no\.?)?', re.I),
+     dict(id='phone',             label='Phone Number',            type='phone',    section='Vendor Information',     required=True,  placeholder='+xxx-xxx-xxxxxxx')),
+    (re.compile(r'(email|e-mail)\s*(address)?', re.I),
+     dict(id='email',             label='Email Address',           type='email',    section='Vendor Information',     required=True,  placeholder='vendor@company.com')),
+    (re.compile(r'(vat|tax|gst|tin)\s*(number|no\.?|registration|id)', re.I),
+     dict(id='vat_number',        label='VAT / Tax Number',        type='text',     section='Vendor Information',     required=False, placeholder='Tax registration number')),
+    (re.compile(r'(commercial|trade|business)\s*(registr|licen|certif)', re.I),
+     dict(id='trade_license',     label='Trade License / Registration', type='file', section='Vendor Information',   required=False)),
+    (re.compile(r'bank\s*(name|details?|account|information)', re.I),
+     dict(id='bank_name',         label='Bank Name',               type='text',     section='Vendor Information',     required=False, placeholder='Bank name')),
+    (re.compile(r'iban|account\s*(number|no\.?)', re.I),
+     dict(id='iban',              label='IBAN / Account Number',   type='text',     section='Vendor Information',     required=False, placeholder='IBAN or account number')),
+
+    # --- Declaration of Conformity ---
+    (re.compile(r'(authorized|authorised)\s*(signator|representative|person)', re.I),
+     dict(id='authorized_signatory', label='Authorized Signatory Name', type='text', section='Declaration of Conformity', required=True, placeholder='Full name of signing authority')),
+    (re.compile(r'(signature|sign\s*here|signed\s*by)', re.I),
+     dict(id='signature',         label='Signature',               type='file',     section='Declaration of Conformity', required=True)),
+    (re.compile(r'(stamp|seal|company\s*stamp)', re.I),
+     dict(id='company_stamp',     label='Company Stamp',           type='file',     section='Declaration of Conformity', required=False)),
+    (re.compile(r'(date\s*of\s*(sign|submission)|signed\s*on|date\s*signed)', re.I),
+     dict(id='declaration_date',  label='Date of Declaration',     type='date',     section='Declaration of Conformity', required=True,  placeholder='DD/MM/YYYY')),
+
+    # --- Technical & Financial Offer ---
+    (re.compile(r'(brand|manufacturer|make)\s*(name|proposed|offered)?', re.I),
+     dict(id='brand_offered',     label='Brand / Manufacturer',    type='text',     section='Technical & Financial Offer', required=False, placeholder='Proposed brand name')),
+    (re.compile(r'(catalogue|catalog|model|part)\s*(number|no\.?|ref)', re.I),
+     dict(id='catalogue_number',  label='Catalogue / Model Number',type='text',     section='Technical & Financial Offer', required=False, placeholder='e.g. CAT-12345')),
+    (re.compile(r'(unit|item)\s*price', re.I),
+     dict(id='unit_price',        label='Unit Price',              type='number',   section='Technical & Financial Offer', required=True,  placeholder='Price per unit')),
+    (re.compile(r'(total|overall)\s*(price|amount|value)', re.I),
+     dict(id='total_price',       label='Total Price',             type='number',   section='Technical & Financial Offer', required=True,  placeholder='Total quoted amount')),
+    (re.compile(r'(country|place)\s*of\s*(manufacture|origin|production)', re.I),
+     dict(id='country_of_origin', label='Country of Origin',      type='text',     section='Technical & Financial Offer', required=False, placeholder='e.g. Germany')),
+    (re.compile(r'(registration|approval|certif).{0,20}(ministry|moh|fda|ce\b|iso)', re.I),
+     dict(id='registration_cert', label='Regulatory Registration Certificate', type='file', section='Technical & Financial Offer', required=True)),
+    (re.compile(r'(shelf\s*life|expiry|expiration)', re.I),
+     dict(id='shelf_life',        label='Shelf Life / Expiry Date',type='text',     section='Technical & Financial Offer', required=False, placeholder='e.g. min. 18 months upon delivery')),
+
+    # --- Compliance & Delivery ---
+    (re.compile(r'(delivery\s*(date|time|schedule)|lead\s*time)', re.I),
+     dict(id='delivery_lead_time',label='Delivery Lead Time',      type='text',     section='Compliance & Delivery',  required=True,  placeholder='e.g. 4-6 weeks after PO')),
+    (re.compile(r'(delivery\s*(term|condition|location|address)|destination|ship\s*to)', re.I),
+     dict(id='delivery_address',  label='Delivery Address / Terms',type='textarea', section='Compliance & Delivery',  required=True,  placeholder='Delivery destination and Incoterms')),
+    (re.compile(r'\bincoterm', re.I),
+     dict(id='incoterms',         label='Incoterms',               type='dropdown', section='Compliance & Delivery',  required=False, options=['EXW', 'FOB', 'CIF', 'DDP', 'DAP', 'CPT'])),
+    (re.compile(r'warranty\s*(period|term|duration)?', re.I),
+     dict(id='warranty',          label='Warranty Period',         type='text',     section='Compliance & Delivery',  required=False, placeholder='e.g. 12 months')),
+    (re.compile(r'(after.?sales?|technical\s*support|maintenance\s*support)', re.I),
+     dict(id='after_sales_support',label='After-Sales Support',    type='textarea', section='Compliance & Delivery',  required=False, placeholder='Describe support offered')),
+    (re.compile(r'(packing|packaging)\s*(standard|requirement|specification)?', re.I),
+     dict(id='packing_standard',  label='Packing Standard',        type='text',     section='Compliance & Delivery',  required=False, placeholder='e.g. Original manufacturer packaging')),
+]
+
+_DEFAULT_FIELD_VALIDATION = {'min': None, 'max': None, 'pattern': None}
+
+_KNOWN_SECTIONS = [
+    'Quotation Submission',
+    'Vendor Information',
+    'Declaration of Conformity',
+    'Schedule of Requirements',
+    'Technical & Financial Offer',
+    'Compliance & Delivery',
+]
+
+
+def _extract_structure_rule_based(full_text: str) -> dict:
+    """
+    Parse title, sections, and fields from raw PDF text without an LLM.
+    Produces a best-effort result; quality depends on how legible the PDF text is.
+    """
+    lines = [l.strip() for l in full_text.splitlines()]
+    non_empty = [l for l in lines if l and not l.startswith('---')]
+
+    # Title: first substantive non-page-marker line
+    title = 'RFQ Document'
+    for line in non_empty[:15]:
+        if len(line) > 5:
+            title = line[:150]
+            break
+
+    # Sections: scan every line for signals
+    found_sections = []
+    section_order = {s: i for i, s in enumerate(_KNOWN_SECTIONS)}
+    for line in lines:
+        for pattern, section_name in _SECTION_SIGNALS:
+            if pattern.search(line) and section_name not in found_sections:
+                found_sections.append(section_name)
+                break
+    found_sections.sort(key=lambda s: section_order.get(s, 99))
+    if 'Schedule of Requirements' not in found_sections:
+        found_sections.append('Schedule of Requirements')
+
+    # Fields: slide a 3-line window and match rules
+    windows = [' '.join(lines[i:i + 3]) for i in range(len(lines))]
+    seen_ids = set()
+    fields = []
+    for window in windows:
+        for pattern, field_def in _FIELD_RULES:
+            if pattern.search(window) and field_def['id'] not in seen_ids:
+                if field_def['section'] in found_sections or field_def['required']:
+                    seen_ids.add(field_def['id'])
+                    fields.append({
+                        'id':            field_def['id'],
+                        'label':         field_def['label'],
+                        'type':          field_def['type'],
+                        'section':       field_def['section'],
+                        'required':      field_def.get('required', False),
+                        'default_value': None,
+                        'placeholder':   field_def.get('placeholder', ''),
+                        'options':       field_def.get('options', []),
+                        'validation':    _DEFAULT_FIELD_VALIDATION.copy(),
+                    })
+
+    return {
+        'title':       title,
+        'description': '',
+        'sections':    found_sections,
+        'fields':      fields,
+    }
+
+
+def parse_rfq_pdf(pdf_bytes, use_gemini: bool = True):
     full_text = ""
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         total_pages = len(pdf.pages)
@@ -517,7 +682,9 @@ def parse_rfq_pdf(pdf_bytes):
             if text:
                 full_text += f"\n--- Page {p_idx + 1} ---\n{text}"
 
-    system_prompt = """You are an expert RFQ Parser. Extract data from the RFQ text into the exact JSON structure below.
+    # --- Main document structure extraction ---
+    if use_gemini:
+        system_prompt = """You are an expert RFQ Parser. Extract data from the RFQ text into the exact JSON structure below.
 
     JSON OUTPUT STRUCTURE:
     {
@@ -546,22 +713,24 @@ def parse_rfq_pdf(pdf_bytes):
       ]
     }
     """
+        try:
+            client = _get_genai_client()
+            response = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=full_text[:30000],
+                config=types.GenerateContentConfig(
+                    system_instruction=system_prompt + "\nRETURN JSON ONLY.",
+                    response_mime_type="application/json",
+                    temperature=0,
+                ),
+            )
+            llm_data = json.loads(response.text)
+        except Exception:
+            llm_data = {"title": "Error Parsing", "description": "", "sections": [], "fields": []}
+    else:
+        llm_data = _extract_structure_rule_based(full_text)
 
-    try:
-        client = _get_genai_client()
-        response = client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=full_text[:30000],
-            config=types.GenerateContentConfig(
-                system_instruction=system_prompt + "\nRETURN JSON ONLY.",
-                response_mime_type="application/json",
-                temperature=0,
-            ),
-        )
-        llm_data = json.loads(response.text)
-    except Exception:
-        llm_data = {"title": "Error Parsing", "description": "", "sections": [], "fields": []}
-
+    # --- Line item extraction ---
     line_items = extract_line_items(pdf_bytes)
 
     valid_items = [
@@ -570,7 +739,8 @@ def parse_rfq_pdf(pdf_bytes):
     ]
 
     if not valid_items:
-        valid_items = _extract_line_items_from_llm(full_text)
+        # use_gemini=False makes this return [] immediately (no API call)
+        valid_items = _extract_line_items_from_llm(full_text, use_gemini=use_gemini)
 
     return {
         "title": llm_data.get("title", "RFQ Document"),
@@ -578,4 +748,5 @@ def parse_rfq_pdf(pdf_bytes):
         "sections": llm_data.get("sections", []),
         "line_items": valid_items,
         "fields": llm_data.get("fields", []),
+        "gemini_used": use_gemini,
     }

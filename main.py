@@ -1,6 +1,6 @@
 import os
 from dotenv import load_dotenv
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 from rfq_parser import parse_rfq_pdf
@@ -18,16 +18,19 @@ app.add_middleware(
 )
 
 @app.post("/parse-rfq")
-async def parse_rfq(file: UploadFile = File(...)):
+async def parse_rfq(
+    file: UploadFile = File(...),
+    use_gemini: bool = Form(True),
+):
     if not file.filename.endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are supported")
-    
-    if not os.getenv("GOOGLE_API_KEY"):
+
+    if use_gemini and not os.getenv("GOOGLE_API_KEY"):
         raise HTTPException(status_code=500, detail="GOOGLE_API_KEY not configured")
 
     contents = await file.read()
     try:
-        result = parse_rfq_pdf(contents)
+        result = parse_rfq_pdf(contents, use_gemini=use_gemini)
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
